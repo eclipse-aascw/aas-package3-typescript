@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 aas-package3-typescript AUTHORS
+//
+// SPDX-License-Identifier: MIT
+
 import tseslint from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
 

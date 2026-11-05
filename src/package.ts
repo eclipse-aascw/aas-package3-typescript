@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 aas-package3-typescript AUTHORS
+//
+// SPDX-License-Identifier: MIT
+
 import { unzipSync, zipSync } from 'fflate';
 import { parseXmlString, serializeXml } from 'xmlsax-typescript';
 import { Ensure, Require } from './dbc';

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 aas-package3-typescript AUTHORS
+//
+// SPDX-License-Identifier: MIT
+
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { Ensure, ErrPostconditionViolation, ErrPreconditionViolation, Require } from '../src';
 

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 aas-package3-typescript AUTHORS
+//
+// SPDX-License-Identifier: MIT
+
 import { describe, expect, test } from 'vitest';
 import { NewPackaging } from '../src';
 
