@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 aas-package3-typescript AUTHORS
+//
+// SPDX-License-Identifier: MIT
+
 export const ErrPreconditionViolation = 'precondition violation';
 export const ErrPostconditionViolation = 'postcondition violation';
 
