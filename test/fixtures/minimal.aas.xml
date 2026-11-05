@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+A minimal, self-written AAS environment used as an arbitrary XML part in the
+tests. It is not taken from any vendor sample.
+-->
+<environment xmlns="https://admin-shell.io/aas/3/0">
+  <assetAdministrationShells>
+    <assetAdministrationShell>
+      <idShort>MinimalShell</idShort>
+      <id>https://example.com/ids/aas/minimal</id>
+      <assetInformation>
+        <assetKind>Instance</assetKind>
+        <globalAssetId>https://example.com/ids/asset/minimal</globalAssetId>
+      </assetInformation>
+    </assetAdministrationShell>
+  </assetAdministrationShells>
+</environment>
