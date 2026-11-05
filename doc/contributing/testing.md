@@ -8,4 +8,4 @@ npm test
 npm run lint
 ```
 
-`TestResources` fixtures are used for regression scenarios.
+Small, self-written fixtures for the tests live in `test/fixtures/`.

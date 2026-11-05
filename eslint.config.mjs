@@ -4,7 +4,7 @@ import tsParser from '@typescript-eslint/parser';
 export default [
   {
     files: ['src/**/*.ts', 'test/**/*.ts', '*.ts'],
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'aas-package3-golang/**', 'TestResources/**'],
+    ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'aas-package3-golang/**'],
     languageOptions: {
       parser: tsParser,
       ecmaVersion: 'latest',

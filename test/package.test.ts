@@ -577,21 +577,15 @@ describe('Packaging', () => {
     expect(rels[0].Supplementary.URI.pathname).toBe('/doc.pdf');
   });
 
-  test('can include copied TestResources fixture files as parts', async () => {
+  test('can include fixture files as parts', async () => {
     const packaging = NewPackaging();
     const pkg = await packaging.CreateInStream(memoryStream());
 
-    const fixturePath = join(
-      process.cwd(),
-      'TestResources',
-      'TestPackageRead',
-      '01_Festo',
-      'wwwcompanycomidsaas9350_1162_7091_7335.aas.xml'
-    );
+    const fixturePath = join(process.cwd(), 'test', 'fixtures', 'minimal.aas.xml');
     const fixtureBytes = new Uint8Array(await readFile(fixturePath));
 
     const spec = await pkg.PutPart(
-      new URL('https://package.local/aasx/fixture/01_Festo.aas.xml'),
+      new URL('https://package.local/aasx/fixture/minimal.aas.xml'),
       'application/xml',
       fixtureBytes
     );
@@ -599,7 +593,7 @@ describe('Packaging', () => {
 
     const out = await pkg.Flush();
     const files = unzipSync(out);
-    expect(files['aasx/fixture/01_Festo.aas.xml']).toBeTruthy();
+    expect(files['aasx/fixture/minimal.aas.xml']).toBeTruthy();
   });
 });
 
