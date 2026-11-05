@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
+SPDX-FileCopyrightText: 2026 aas-package3-typescript AUTHORS
+
+SPDX-License-Identifier: MIT
+-->
+<!--
 A minimal, self-written AAS environment used as an arbitrary XML part in the
 tests. It is not taken from any vendor sample.
 -->

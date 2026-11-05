@@ -21,13 +21,3 @@ path = [
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 aas-package3-typescript AUTHORS"
 SPDX-License-Identifier = "MIT"
-
-# The test resources are verbatim copies of the test resources in
-# aas-package3-csharp (src/AasCore.Aas3.Package.Tests/TestResources/), where
-# the expected outputs are compared byte-by-byte. They are kept unchanged, so
-# they do not carry a header.
-[[annotations]]
-path = "TestResources/**"
-precedence = "aggregate"
-SPDX-FileCopyrightText = "2023 aas-package3-csharp AUTHORS"
-SPDX-License-Identifier = "MIT"
