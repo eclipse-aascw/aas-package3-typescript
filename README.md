@@ -27,7 +27,7 @@ Here are short snippets to demonstrate how you can use the library.
 To create and write to a package:
 
 ```ts
-import { NewPackaging } from 'aas-package3-typescript';
+import { NewPackaging, WithPackage } from 'aas-package3-typescript';
 
 const packaging = NewPackaging();
 
@@ -35,8 +35,7 @@ const specContent = new TextEncoder().encode('{"aas": "..."}');
 const thumbnailContent = new Uint8Array([/* PNG bytes */]);
 const supplementaryContent = new Uint8Array([/* PDF bytes */]);
 
-const pkg = await packaging.Create('/path/to/some/file.aasx');
-try {
+await WithPackage(packaging.Create('/path/to/some/file.aasx'), async (pkg) => {
     const spec = await pkg.PutPart(
         new URL('https://package.local/aasx/some-company/data.json'),
         'application/json',
@@ -57,12 +56,13 @@ try {
         supplementaryContent
     );
     await pkg.RelateSupplementaryToSpec(suppl, spec);
-
-    await pkg.Flush();
-} finally {
-    pkg.Close();
-}
+});
 ```
+
+`WithPackage` closes the package when the callback completes, which writes the
+changes to the file. If the callback throws, the changes are discarded and the
+file is left as it was. You can still call `Flush()` to save in the middle of a
+session.
 
 To read from the package:
 
@@ -129,6 +129,12 @@ npm install aas-package3-typescript
 | `OpenReadWriteFromStream(stream)` | Open an AASX package from a stream for read/write |
 | `OpenReadWriteFromBytes(bytes)` | Open an AASX package from bytes for read/write |
 
+### Functions
+
+| Function | Description |
+|----------|-------------|
+| `WithPackage(pkg, body)` | Run `body` on the package, then close it; on an exception, discard the changes instead of flushing |
+
 ### PackageRead Methods
 
 | Method | Description |
@@ -142,7 +148,8 @@ npm install aas-package3-typescript
 | `FindPart(uri)` | Find a part by URI (returns null if not found) |
 | `MustPart(uri)` | Get a part by URI (throws if not found) |
 | `Thumbnail()` | Get the package thumbnail |
-| `Close()` | Close the package |
+| `Close()` | Close the package; a modified read-write package is flushed synchronously first |
+| `CloseAsync()` | Like `Close()`, but flushes asynchronously (needed for streams whose `writeAll` returns a Promise) |
 
 ### PackageReadWrite Methods
 
@@ -160,6 +167,8 @@ Inherits all `PackageRead` methods, plus:
 | `SetThumbnail(part)` | Set the package thumbnail |
 | `UnsetThumbnail()` | Remove the package thumbnail |
 | `Flush()` | Write pending changes |
+| `FlushSync()` | Write pending changes synchronously |
+| `Discard()` | Close the package without writing pending changes |
 
 ## Versioning
 

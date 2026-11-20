@@ -35,6 +35,7 @@ interface XmlNodeLike {
 
 interface PackageSink {
   write(data: Uint8Array): Promise<void>;
+  writeSync(data: Uint8Array): void;
 }
 
 export interface ReadSeeker {
@@ -45,12 +46,28 @@ export interface ReadWriteSeeker extends ReadSeeker {
   writeAll(data: Uint8Array): void | Promise<void>;
 }
 
+type WriteFileSync = (path: string, data: Uint8Array) => void;
+
 class FileSink implements PackageSink {
-  constructor(private readonly path: string) {}
+  // node:fs can only be imported asynchronously in ES modules, so the
+  // synchronous writer is resolved up front when the package is opened.
+  constructor(
+    private readonly path: string,
+    private readonly writeFileSync: WriteFileSync
+  ) {}
+
+  static async create(path: string): Promise<FileSink> {
+    const fs = await import('node:fs');
+    return new FileSink(path, fs.writeFileSync);
+  }
 
   async write(data: Uint8Array): Promise<void> {
     const fs = await import('node:fs/promises');
     await fs.writeFile(this.path, data);
+  }
+
+  writeSync(data: Uint8Array): void {
+    this.writeFileSync(this.path, data);
   }
 }
 
@@ -60,6 +77,19 @@ class StreamSink implements PackageSink {
   async write(data: Uint8Array): Promise<void> {
     await this.stream.writeAll(data);
   }
+
+  writeSync(data: Uint8Array): void {
+    const result = this.stream.writeAll(data);
+    if (result instanceof Promise) {
+      // We cannot wait for the write here. Avoid an unhandled rejection; the
+      // caller is told below to use the asynchronous variant instead.
+      result.catch(() => undefined);
+      throw new Error(
+        'the stream writes asynchronously (writeAll returned a Promise), ' +
+          'so it cannot be flushed synchronously; use FlushAsync() or CloseAsync() instead'
+      );
+    }
+  }
 }
 
 class PackageBase {
@@ -68,6 +98,10 @@ class PackageBase {
   public readonly entryNames = new Map<string, string>();
   public originURI = '';
   public nextRelID = 1;
+  // Set whenever the package changes in memory and cleared by a flush, so that
+  // closing an unchanged package leaves the file or stream untouched.
+  public modified = false;
+  public closed = false;
 
   constructor(
     public readonly path: string,
@@ -149,12 +183,25 @@ class PackageBase {
 }
 
 export class Part {
+  private contentType: string;
+
   constructor(
     public readonly URI: URL,
-    public ContentType: string,
+    contentType: string,
     private content: Uint8Array,
     public readonly pkg: PackageBase
-  ) {}
+  ) {
+    this.contentType = contentType;
+  }
+
+  get ContentType(): string {
+    return this.contentType;
+  }
+
+  set ContentType(value: string) {
+    this.contentType = value;
+    this.pkg.modified = true;
+  }
 
   Stream(): ReadableStream<Uint8Array> {
     const bytes = this.ReadAllBytes();
@@ -176,6 +223,7 @@ export class Part {
 
   setContent(content: Uint8Array): void {
     this.content = content;
+    this.pkg.modified = true;
   }
 }
 
@@ -186,8 +234,9 @@ export interface SupplementaryRelationship {
 
 export class Packaging {
   Create = async (path: string): Promise<PackageReadWrite> => {
-    const pkg = new PackageBase(path, true, new FileSink(path));
+    const pkg = new PackageBase(path, true, await FileSink.create(path));
     initializeNewPackage(pkg);
+    pkg.modified = true;
 
     const result = new PackageReadWrite(path, pkg);
     const specs = await result.Specs();
@@ -199,6 +248,7 @@ export class Packaging {
   CreateInStream = async (stream: ReadWriteSeeker): Promise<PackageReadWrite> => {
     const pkg = new PackageBase('', true, new StreamSink(stream));
     initializeNewPackage(pkg);
+    pkg.modified = true;
     return new PackageReadWrite('', pkg);
   };
 
@@ -218,7 +268,7 @@ export class Packaging {
   OpenReadWrite = async (path: string): Promise<PackageReadWrite> => {
     const fs = await import('node:fs/promises');
     const bytes = await fs.readFile(path);
-    const pkg = openFromBytes(new Uint8Array(bytes), path, true, new FileSink(path));
+    const pkg = openFromBytes(new Uint8Array(bytes), path, true, await FileSink.create(path));
     return new PackageReadWrite(path, pkg);
   };
 
@@ -249,8 +299,25 @@ export class PackageRead {
     protected readonly base: PackageBase
   ) {}
 
+  /**
+   * Close the package.
+   *
+   * A read-write package is flushed first if it has been modified since it was
+   * opened or last flushed. Closing an already closed package does nothing.
+   *
+   * Use {@link WithPackage} if a failed modification should not be written.
+   */
   Close(): void {
-    return;
+    this.base.closed = true;
+  }
+
+  /**
+   * Close the package like {@link Close}, but flush asynchronously.
+   *
+   * Use this for streams whose `writeAll` returns a Promise.
+   */
+  async CloseAsync(): Promise<void> {
+    this.base.closed = true;
   }
 
   async Specs(): Promise<Part[]> {
@@ -359,6 +426,8 @@ export class PackageReadWrite extends PackageRead {
     const normalized = normalizeURI(uri);
     const bytes = content.slice();
 
+    this.base.modified = true;
+
     let part = this.base.parts.get(normalized);
     if (part) {
       part.ContentType = contentType;
@@ -399,6 +468,7 @@ export class PackageReadWrite extends PackageRead {
 
   async DeletePart(part: Part): Promise<void> {
     const normalized = normalizeURI(part.URI);
+    this.base.modified = true;
     this.base.parts.delete(normalized);
     this.base.entryNames.delete(normalized);
     this.base.removeAllRelationshipsWithSourceOrTarget(pathFromUri(part.URI));
@@ -410,6 +480,7 @@ export class PackageReadWrite extends PackageRead {
       return;
     }
 
+    this.base.modified = true;
     this.base.addRelationship(this.base.originURI, pathFromUri(part.URI), RelationTypeAasxSpec);
   }
 
@@ -417,6 +488,7 @@ export class PackageReadWrite extends PackageRead {
     const isSpec = this.base.hasRelationship(this.base.originURI, pathFromUri(part.URI), RelationTypeAasxSpec);
     Require(isSpec, 'The part fulfills the spec property.');
 
+    this.base.modified = true;
     this.base.removeRelationship(this.base.originURI, pathFromUri(part.URI), RelationTypeAasxSpec);
     this.base.relationships.delete(normalizeURI(part.URI));
   }
@@ -429,6 +501,7 @@ export class PackageReadWrite extends PackageRead {
       return;
     }
 
+    this.base.modified = true;
     this.base.addRelationship(pathFromUri(spec.URI), pathFromUri(supplementary.URI), RelationTypeAasxSupplementary);
   }
 
@@ -436,10 +509,14 @@ export class PackageReadWrite extends PackageRead {
     const isSpec = this.base.hasRelationship(this.base.originURI, pathFromUri(spec.URI), RelationTypeAasxSpec);
     Require(isSpec, 'The part fulfills the spec property.');
 
+    if (this.base.hasRelationship(pathFromUri(spec.URI), pathFromUri(supplementary.URI), RelationTypeAasxSupplementary)) {
+      this.base.modified = true;
+    }
     this.base.removeRelationship(pathFromUri(spec.URI), pathFromUri(supplementary.URI), RelationTypeAasxSupplementary);
   }
 
   async SetThumbnail(part: Part): Promise<void> {
+    this.base.modified = true;
     const rels = this.base.getRelationshipsByType('', RelationTypeThumbnail);
     for (const rel of rels) {
       this.base.removeRelationship('', rel.target, RelationTypeThumbnail);
@@ -450,6 +527,9 @@ export class PackageReadWrite extends PackageRead {
 
   async UnsetThumbnail(): Promise<void> {
     const rels = this.base.getRelationshipsByType('', RelationTypeThumbnail);
+    if (rels.length > 0) {
+      this.base.modified = true;
+    }
     for (const rel of rels) {
       this.base.removeRelationship('', rel.target, RelationTypeThumbnail);
     }
@@ -460,7 +540,65 @@ export class PackageReadWrite extends PackageRead {
     if (this.base.sink) {
       await this.base.sink.write(bytes);
     }
+    this.base.modified = false;
     return bytes;
+  }
+
+  /**
+   * Write the pending changes synchronously.
+   *
+   * Throws if the package was opened on a stream whose `writeAll` returns a
+   * Promise; use {@link Flush} for such streams.
+   */
+  FlushSync(): Uint8Array {
+    const bytes = this.writeToBytes();
+    if (this.base.sink) {
+      this.base.sink.writeSync(bytes);
+    }
+    this.base.modified = false;
+    return bytes;
+  }
+
+  /**
+   * Flush the pending changes synchronously, if there are any, and close the
+   * package.
+   *
+   * Throws if the package was opened on a stream whose `writeAll` returns a
+   * Promise; use {@link CloseAsync} for such streams. If the flush fails, the
+   * package stays open so that you can retry or {@link Discard} it.
+   */
+  override Close(): void {
+    if (this.base.closed) {
+      return;
+    }
+    if (this.base.modified && this.base.sink) {
+      this.FlushSync();
+    }
+    this.base.closed = true;
+  }
+
+  /**
+   * Flush the pending changes asynchronously, if there are any, and close the
+   * package.
+   *
+   * If the flush fails, the package stays open so that you can retry or
+   * {@link Discard} it.
+   */
+  override async CloseAsync(): Promise<void> {
+    if (this.base.closed) {
+      return;
+    }
+    if (this.base.modified && this.base.sink) {
+      await this.Flush();
+    }
+    this.base.closed = true;
+  }
+
+  /**
+   * Close the package without writing the pending changes.
+   */
+  Discard(): void {
+    this.base.closed = true;
   }
 
   private writeToBytes(): Uint8Array {
@@ -486,6 +624,39 @@ export class PackageReadWrite extends PackageRead {
 
     return zipSync(files, { level: 0 });
   }
+}
+
+/**
+ * Run `body` on the package and close it afterwards, like a `with` block.
+ *
+ * If `body` completes, the package is closed with {@link PackageRead.CloseAsync},
+ * which flushes a modified read-write package. If `body` throws, a read-write
+ * package is discarded without flushing, so a half-done modification never
+ * reaches the file or stream, and the error is re-thrown.
+ *
+ * @example
+ * await WithPackage(packaging.OpenReadWrite(path), async (pkg) => {
+ *   await pkg.PutPart(uri, 'application/json', content);
+ * });
+ */
+export async function WithPackage<P extends PackageRead, T>(
+  pkg: P | Promise<P>,
+  body: (pkg: P) => T | Promise<T>
+): Promise<T> {
+  const opened = await pkg;
+  let result: T;
+  try {
+    result = await body(opened);
+  } catch (error) {
+    if (opened instanceof PackageReadWrite) {
+      opened.Discard();
+    } else {
+      await opened.CloseAsync();
+    }
+    throw error;
+  }
+  await opened.CloseAsync();
+  return result;
 }
 
 function initializeNewPackage(pkg: PackageBase): void {

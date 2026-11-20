@@ -15,7 +15,8 @@ import {
   RelationTypeAasxSpec,
   RelationTypeAasxSupplementary,
   RelationTypeThumbnail,
-  Require
+  Require,
+  WithPackage
 } from '../src';
 
 describe('Packaging', () => {
@@ -598,6 +599,240 @@ describe('Packaging', () => {
     const out = await pkg.Flush();
     const files = unzipSync(out);
     expect(files['aasx/fixture/minimal.aas.xml']).toBeTruthy();
+  });
+});
+
+describe('Close and WithPackage', () => {
+  const specUri = new URL('https://package.local/aasx/spec.aas.xml');
+
+  function countingStream(initial: Uint8Array): {
+    readAll: () => Uint8Array;
+    writeAll: (data: Uint8Array) => void;
+    writes: () => number;
+  } {
+    let bytes = initial;
+    let writes = 0;
+    return {
+      readAll: () => bytes,
+      writeAll: (data: Uint8Array) => {
+        bytes = data.slice();
+        writes += 1;
+      },
+      writes: () => writes
+    };
+  }
+
+  async function emptyPackageBytes(): Promise<Uint8Array> {
+    const pkg = await NewPackaging().CreateInStream(memoryStream());
+    return pkg.Flush();
+  }
+
+  test('Close flushes a newly created package', async () => {
+    const stream = countingStream(new Uint8Array());
+    const pkg = await NewPackaging().CreateInStream(stream);
+    pkg.Close();
+
+    expect(stream.writes()).toBe(1);
+    const reopened = await NewPackaging().OpenReadFromBytes(stream.readAll());
+    expect(await reopened.Specs()).toHaveLength(0);
+  });
+
+  test('Close flushes pending modifications', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    const spec = await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+    await pkg.MakeSpec(spec);
+    pkg.Close();
+
+    expect(stream.writes()).toBe(1);
+    const reopened = await NewPackaging().OpenReadFromBytes(stream.readAll());
+    expect(await reopened.Specs()).toHaveLength(1);
+  });
+
+  test('no-op mutations after a flush do not cause another write', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    const spec = await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+    await pkg.MakeSpec(spec);
+    await pkg.Flush();
+    expect(stream.writes()).toBe(1);
+
+    await pkg.MakeSpec(spec);
+    await pkg.UnsetThumbnail();
+    pkg.Close();
+
+    expect(stream.writes()).toBe(1);
+  });
+
+  test('Close does not write a package that was only opened', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    await pkg.Parts();
+    pkg.Close();
+
+    expect(stream.writes()).toBe(0);
+  });
+
+  test('Close is idempotent', async () => {
+    const stream = countingStream(new Uint8Array());
+    const pkg = await NewPackaging().CreateInStream(stream);
+    pkg.Close();
+    pkg.Close();
+
+    expect(stream.writes()).toBe(1);
+  });
+
+  test('changing a part directly marks the package as modified', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    const origin = await pkg.MustPart(new URL('https://package.local/aasx/aasx-origin'));
+    origin.ContentType = 'application/octet-stream';
+    pkg.Close();
+
+    expect(stream.writes()).toBe(1);
+  });
+
+  test('Discard closes without writing', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+    pkg.Discard();
+    pkg.Close();
+
+    expect(stream.writes()).toBe(0);
+  });
+
+  function asyncStream(initial: Uint8Array): {
+    readAll: () => Uint8Array;
+    writeAll: (data: Uint8Array) => Promise<void>;
+    writes: () => number;
+  } {
+    let bytes = initial;
+    let writes = 0;
+    return {
+      readAll: () => bytes,
+      writeAll: async (data: Uint8Array) => {
+        await Promise.resolve();
+        bytes = data.slice();
+        writes += 1;
+      },
+      writes: () => writes
+    };
+  }
+
+  test('Close is synchronous', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+
+    const result: void = pkg.Close();
+    expect(result).toBeUndefined();
+    expect(stream.writes()).toBe(1);
+  });
+
+  test('FlushSync writes synchronously', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+
+    const bytes = pkg.FlushSync();
+    expect(stream.writes()).toBe(1);
+    expect(stream.readAll()).toEqual(bytes);
+
+    pkg.Close();
+    expect(stream.writes()).toBe(1);
+  });
+
+  test('Close refuses a stream that writes asynchronously and stays open', async () => {
+    const stream = asyncStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+
+    expect(() => pkg.Close()).toThrow(/CloseAsync/);
+
+    await pkg.CloseAsync();
+    const reopened = await NewPackaging().OpenReadFromBytes(stream.readAll());
+    expect(await reopened.FindPart(specUri)).not.toBeNull();
+  });
+
+  test('CloseAsync flushes pending modifications to an async stream', async () => {
+    const stream = asyncStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+    await pkg.CloseAsync();
+    await pkg.CloseAsync();
+
+    expect(stream.writes()).toBe(1);
+  });
+
+  test('CloseAsync does not write an unmodified package', async () => {
+    const stream = asyncStream(await emptyPackageBytes());
+    const pkg = await NewPackaging().OpenReadWriteFromStream(stream);
+    await pkg.CloseAsync();
+
+    expect(stream.writes()).toBe(0);
+  });
+
+  test('WithPackage flushes to an async stream', async () => {
+    const stream = asyncStream(await emptyPackageBytes());
+    await WithPackage(NewPackaging().OpenReadWriteFromStream(stream), (pkg) =>
+      pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'))
+    );
+
+    expect(stream.writes()).toBe(1);
+  });
+
+  test('WithPackage flushes when the body completes', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+    const result = await WithPackage(NewPackaging().OpenReadWriteFromStream(stream), async (pkg) => {
+      const spec = await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+      await pkg.MakeSpec(spec);
+      return 42;
+    });
+
+    expect(result).toBe(42);
+    expect(stream.writes()).toBe(1);
+    const reopened = await NewPackaging().OpenReadFromBytes(stream.readAll());
+    expect(await reopened.Specs()).toHaveLength(1);
+  });
+
+  test('WithPackage does not flush when the body throws', async () => {
+    const initial = await emptyPackageBytes();
+    const stream = countingStream(initial);
+
+    await expect(
+      WithPackage(NewPackaging().OpenReadWriteFromStream(stream), async (pkg) => {
+        await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+
+    expect(stream.writes()).toBe(0);
+    expect(stream.readAll()).toBe(initial);
+  });
+
+  test('WithPackage keeps an explicit mid-body flush when the body throws later', async () => {
+    const stream = countingStream(await emptyPackageBytes());
+
+    await expect(
+      WithPackage(NewPackaging().OpenReadWriteFromStream(stream), async (pkg) => {
+        const spec = await pkg.PutPart(specUri, 'application/xml', new TextEncoder().encode('<aas/>'));
+        await pkg.MakeSpec(spec);
+        await pkg.Flush();
+        await pkg.DeletePart(spec);
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+
+    expect(stream.writes()).toBe(1);
+    const reopened = await NewPackaging().OpenReadFromBytes(stream.readAll());
+    expect(await reopened.Specs()).toHaveLength(1);
+  });
+
+  test('WithPackage works with read-only packages', async () => {
+    const bytes = await emptyPackageBytes();
+    const specs = await WithPackage(NewPackaging().OpenReadFromBytes(bytes), (pkg) => pkg.Specs());
+    expect(specs).toHaveLength(0);
   });
 });
 
